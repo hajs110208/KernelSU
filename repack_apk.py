@@ -32,12 +32,6 @@ def load_jsonc(path: Path) -> dict:
 
 def merge_config(file_cfg: dict, args: argparse.Namespace) -> dict:
     cfg = {
-        "signing": {
-            "keystore_path": "",
-            "key_alias": "",
-            "keystore_pass": "",
-            "key_pass": "",
-        },
         "app_build_type": "debug",
         "ksud_build_type": "debug",
         "arch": [],
@@ -45,10 +39,7 @@ def merge_config(file_cfg: dict, args: argparse.Namespace) -> dict:
         "strip": False,
     }
 
-    cfg.update({k: v for k, v in file_cfg.items() if k != "signing"})
-    file_signing = file_cfg.get("signing", {})
-    if isinstance(file_signing, dict):
-        cfg["signing"].update(file_signing)
+    cfg.update({k: v for k, v in file_cfg.items() if k not in ("signing",)})
 
     if args.app_build_type:
         cfg["app_build_type"] = args.app_build_type
@@ -60,15 +51,6 @@ def merge_config(file_cfg: dict, args: argparse.Namespace) -> dict:
         cfg["output_name"] = args.output_name
     if args.strip is not None:
         cfg["strip"] = args.strip
-
-    if args.keystore_path:
-        cfg["signing"]["keystore_path"] = args.keystore_path
-    if args.key_alias:
-        cfg["signing"]["key_alias"] = args.key_alias
-    if args.keystore_pass:
-        cfg["signing"]["keystore_pass"] = args.keystore_pass
-    if args.key_pass:
-        cfg["signing"]["key_pass"] = args.key_pass
 
     cfg["arch"] = normalize_arch_values(cfg.get("arch", []))
     return cfg
@@ -238,7 +220,7 @@ def strip_binary(src: Path, strip_tool: Path, tmp_dir: Path) -> bytes:
 
 def repack_apk(
     apk_path: Path,
-    out_unsigned_path: Path,
+    out_path: Path,
     arch_filters: List[str],
     ksud_by_arch: Dict[str, Path],
     strip_tool: Optional[Path] = None,
@@ -251,7 +233,7 @@ def repack_apk(
             else:
                 ksud_bytes_by_arch[arch] = ksud_path.read_bytes()
 
-        with ZipFile(apk_path, "r") as zin, ZipFile(out_unsigned_path, "w") as zout:
+        with ZipFile(apk_path, "r") as zin, ZipFile(out_path, "w") as zout:
             for info in zin.infolist():
                 name = info.filename
 
@@ -298,15 +280,6 @@ def assert_required_libs(apk_path: Path, arch_filters: List[str]) -> None:
         )
 
 
-def validate_signing_config(signing: Dict[str, str]) -> None:
-    required = ["keystore_path", "key_alias", "keystore_pass", "key_pass"]
-    missing = [k for k in required if not str(signing.get(k, "")).strip()]
-    if missing:
-        raise ValueError("Signing config is incomplete, missing: " + ", ".join(missing))
-    if not Path(signing["keystore_path"]).exists():
-        raise FileNotFoundError(f"Keystore not found: {signing['keystore_path']}")
-
-
 def do_repack(args: argparse.Namespace) -> int:
     ws_root = workspace_root()
     config_path = Path(args.config).resolve() if args.config else ws_root / "repack-config.json"
@@ -350,14 +323,11 @@ def do_repack(args: argparse.Namespace) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     output_name = cfg.get("output_name") or apk.stem
-    unsigned_path = out_dir / f"{output_name}-repack-unsigned.apk"
-    aligned_path = out_dir / f"{output_name}-repack-aligned.apk"
-    signed_path = out_dir / f"{output_name}.apk"
+    repacked_path = out_dir / f"{output_name}.apk"
 
     # Clean stale outputs before repacking.
-    for stale in (unsigned_path, aligned_path, signed_path):
-        if stale.exists():
-            stale.unlink()
+    if repacked_path.exists():
+        repacked_path.unlink()
 
     # Resolve strip tool.
     do_strip: bool = bool(cfg.get("strip", False))
@@ -369,56 +339,9 @@ def do_repack(args: argparse.Namespace) -> int:
         else:
             print(f"[INFO] Strip tool: {strip_tool}")
 
-    try:
-        repack_apk(apk, unsigned_path, arch_filters, ksud_by_arch, strip_tool)
-        assert_required_libs(unsigned_path, arch_filters)
-
-        zipalign = find_android_tool("zipalign")
-        if zipalign is None:
-            raise FileNotFoundError("zipalign not found in PATH or Android SDK build-tools")
-        run_cmd(
-            [str(zipalign), "-P", "16", "-f", "4", str(unsigned_path), str(aligned_path)],
-            "zipalign failed",
-        )
-
-        signing = cfg.get("signing", {})
-        validate_signing_config(signing)
-
-        apksigner = find_android_tool("apksigner")
-        if apksigner is None:
-            raise FileNotFoundError("apksigner not found in PATH or Android SDK build-tools")
-
-        run_cmd(
-            [
-                str(apksigner),
-                "sign",
-                "--v1-signing-enabled",
-                "false",
-                "--v2-signing-enabled",
-                "true",
-                "--v3-signing-enabled",
-                "false",
-                "--v4-signing-enabled",
-                "false",
-                "--ks",
-                str(Path(signing["keystore_path"]).resolve()),
-                "--ks-key-alias",
-                signing["key_alias"],
-                "--ks-pass",
-                f"pass:{signing['keystore_pass']}",
-                "--key-pass",
-                f"pass:{signing['key_pass']}",
-                "--out",
-                str(signed_path),
-                str(aligned_path),
-            ],
-            "apksigner failed",
-        )
-    finally:
-        # Remove intermediate files regardless of success/failure.
-        for tmp in (unsigned_path, aligned_path):
-            if tmp.exists():
-                tmp.unlink()
+    # Repack APK
+    repack_apk(apk, repacked_path, arch_filters, ksud_by_arch, strip_tool)
+    assert_required_libs(repacked_path, arch_filters)
 
     print(f"Input APK : {apk}")
     if ksud_by_arch:
@@ -428,17 +351,17 @@ def do_repack(args: argparse.Namespace) -> int:
     print(f"ksud      : {ksud_desc}")
     print(f"Strip     : {'yes (' + str(strip_tool) + ')' if strip_tool else ('requested but unavailable' if do_strip else 'no')}")
     print(f"Arch      : {', '.join(arch_filters)}")
-    print(f"Output    : {signed_path}")
+    print(f"Output    : {repacked_path}")
     return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Repack manager APK with ksud injection, zipalign(16KB), and resign."
+        description="Repack manager APK with ksud injection."
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    repack = subparsers.add_parser("repack", help="Repack and resign APK")
+    repack = subparsers.add_parser("repack", help="Repack APK")
     repack.add_argument("-c", "--config", help="Path to jsonc config file")
     repack.add_argument("-b", "--app-build-type", help="APK build type override, e.g. debug/release")
     repack.add_argument("-t", "--ksud-build-type", help="ksud build type override, e.g. debug/release")
@@ -448,10 +371,6 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         help="Target architecture(s), repeat or use comma list, e.g. -a arm64-v8a -a armeabi-v7a",
     )
-    repack.add_argument("-K", "--keystore-path", help="Keystore path override")
-    repack.add_argument("-A", "--key-alias", help="Key alias override")
-    repack.add_argument("-P", "--keystore-pass", help="Keystore password override")
-    repack.add_argument("-S", "--key-pass", help="Private key password override")
     repack.add_argument("-n", "--output-name", help="Base name for output APK files (default: input APK stem)")
     strip_group = repack.add_mutually_exclusive_group()
     strip_group.add_argument(
@@ -469,6 +388,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Disable strip even if config enables it",
     )
     repack.add_argument("-o", "--out-dir", help="Output directory override (default: dist)")
+    repack.add_argument(
+        "--no-sign",
+        dest="no_sign",
+        action="store_true",
+        help="Skip signing (always skips signing - this is a no-op for compatibility)",
+    )
     repack.set_defaults(func=do_repack)
 
     return parser
