@@ -72,10 +72,6 @@ android {
             }
         }
         release {
-            isMinifyEnabled = true
-            isShrinkResources = true
-            vcsInfo.include = false
-            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             externalNativeBuild {
                 cmake {
                     arguments += "-DDEBUG_SYMBOLS_PATH=${layout.buildDirectory.get().asFile.absolutePath}/symbols"
