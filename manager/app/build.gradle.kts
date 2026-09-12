@@ -6,7 +6,6 @@ plugins {
     alias(libs.plugins.agp.app)
     alias(libs.plugins.compose.compiler)
     alias(libs.plugins.kotlin.serialization)
-    alias(libs.plugins.lsplugin.apksign)
     alias(libs.plugins.protobuf)
     id("kotlin-parcelize")
 }
@@ -27,13 +26,6 @@ val defaultManagerPackageName = if (isPrBuild) "me.weishu.kernelsu.pr" else "me.
 val defaultManagerName = if (isPrBuild) "KernelSU PR" else "KernelSU"
 val managerPackageName = project.findProperty("KSU_PACKAGE_NAME")?.toString() ?: defaultManagerPackageName
 val managerName = project.findProperty("KSU_NAME")?.toString() ?: defaultManagerName
-
-apksign {
-    storeFileProperty = "KEYSTORE_FILE"
-    storePasswordProperty = "KEYSTORE_PASSWORD"
-    keyAliasProperty = "KEY_ALIAS"
-    keyPasswordProperty = "KEY_PASSWORD"
-}
 
 protobuf {
     protoc {
